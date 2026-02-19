@@ -1,5 +1,3 @@
-using Aspire.Hosting;
-using Aspire.Hosting.Postgres;
 using Aspire13BatteriesIncludedDemo.AppHost;
 
 var builder = DistributedApplication.CreateBuilder(args);
