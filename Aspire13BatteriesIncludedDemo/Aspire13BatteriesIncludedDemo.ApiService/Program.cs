@@ -1,4 +1,7 @@
 using Npgsql;
+using Microsoft.Agents.AI;
+using Microsoft.Agents.AI.Hosting;
+using Microsoft.Extensions.AI;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -6,6 +9,56 @@ var builder = WebApplication.CreateBuilder(args);
 builder.AddServiceDefaults();
 
 builder.AddNpgsqlDataSource("appDb");
+
+// Add Azure AI Foundry Chat Completions client + register keyed IChatClient.
+// Connection name "chat" matches the deployment resource name from the AppHost.
+builder.AddAzureChatCompletionsClient("chat")
+    .AddKeyedChatClient("chat");
+
+// Register MAF agent with tool calling + built-in OpenTelemetry instrumentation.
+builder.AddAIAgent(
+    name: "product-assistant",
+    instructions: """
+        You are a helpful assistant for an online product catalog.
+        You can search for products and provide details about them.
+        Always respond in a friendly and concise manner.
+        When asked about products, use the available tools to look up real data.
+        """,
+    description: "An AI assistant that helps with product catalog queries.",
+    chatClientServiceKey: "chat")
+    .WithAITool(sp =>
+    {
+        var dataSource = sp.GetRequiredService<NpgsqlDataSource>();
+        return AIFunctionFactory.Create(async (string? searchTerm) =>
+        {
+            await using var conn = await dataSource.OpenConnectionAsync();
+            await using var cmd = conn.CreateCommand();
+
+            if (string.IsNullOrWhiteSpace(searchTerm))
+            {
+                cmd.CommandText = "SELECT id, name, description, price FROM products ORDER BY id LIMIT 10";
+            }
+            else
+            {
+                cmd.CommandText = "SELECT id, name, description, price FROM products WHERE name ILIKE $1 OR description ILIKE $1 ORDER BY id LIMIT 10";
+                cmd.Parameters.AddWithValue($"%{searchTerm}%");
+            }
+
+            await using var reader = await cmd.ExecuteReaderAsync();
+            var products = new List<object>();
+            while (await reader.ReadAsync())
+            {
+                products.Add(new
+                {
+                    Id = reader.GetInt32(0),
+                    Name = reader.GetString(1),
+                    Description = reader.IsDBNull(2) ? null : reader.GetString(2),
+                    Price = reader.GetDecimal(3)
+                });
+            }
+            return products;
+        }, "SearchProducts", "Searches the product catalog. If searchTerm is provided, filters by name or description. Returns up to 10 products.");
+    });
 
 // Add services to the container.
 builder.Services.AddProblemDetails();
@@ -23,7 +76,18 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
-app.MapGet("/", () => "API service is running. Try /products or /weatherforecast");
+app.MapGet("/", () => "API service is running. Try /products, /weatherforecast, or /chat?message=hello");
+
+// --- Chat endpoint (Microsoft Agent Framework demo) ---
+// The MAF agent has built-in OpenTelemetry instrumentation:
+// every LLM call, tool invocation, and token usage is traced in the Aspire dashboard.
+
+app.MapGet("/chat", async (string message, [Microsoft.Extensions.DependencyInjection.FromKeyedServices("product-assistant")] AIAgent agent) =>
+{
+    var response = await agent.RunAsync(message);
+    return Results.Ok(new { reply = response.ToString() });
+})
+.WithName("Chat");
 
 // --- Products endpoints (Postgres demo) ---
 

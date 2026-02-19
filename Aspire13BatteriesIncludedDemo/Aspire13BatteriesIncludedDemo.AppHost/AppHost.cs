@@ -1,3 +1,4 @@
+using Aspire.Hosting.Azure;
 using Aspire13BatteriesIncludedDemo.AppHost;
 
 var builder = DistributedApplication.CreateBuilder(args);
@@ -36,11 +37,16 @@ var migrations = builder.AddProject<Projects.Aspire13BatteriesIncludedDemo_Migra
 
 appDb.WithChildRelationship(migrations);
 
+var aiFoundry = builder.AddAzureAIFoundry("ai-foundry");
+var chatDeployment = aiFoundry.AddDeployment("chat", AIFoundryModel.OpenAI.Gpt4oMini);
+
 var apiService = builder.AddProject<Projects.Aspire13BatteriesIncludedDemo_ApiService>("apiservice")
     .WithHttpHealthCheck("/health")
     .WithReference(appDb)
     .WaitFor(appDb)
-    .WaitForCompletion(migrations);
+    .WaitForCompletion(migrations)
+    .WithReference(chatDeployment)
+    .WaitFor(chatDeployment);
 
 builder.AddProject<Projects.Aspire13BatteriesIncludedDemo_Web>("webfrontend")
     .WithExternalHttpEndpoints()
