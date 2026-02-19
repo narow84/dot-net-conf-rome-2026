@@ -30,10 +30,17 @@ var appDb = postgres.AddDatabase("appDb", dbName)
     .WithCreationScript(creationScript);
 
 
+var migrations = builder.AddProject<Projects.Aspire13BatteriesIncludedDemo_MigrationService>("migrations")
+    .WithReference(appDb)
+    .WaitFor(appDb);
+
+appDb.WithChildRelationship(migrations);
+
 var apiService = builder.AddProject<Projects.Aspire13BatteriesIncludedDemo_ApiService>("apiservice")
     .WithHttpHealthCheck("/health")
     .WithReference(appDb)
-    .WaitFor(appDb);
+    .WaitFor(appDb)
+    .WaitForCompletion(migrations);
 
 builder.AddProject<Projects.Aspire13BatteriesIncludedDemo_Web>("webfrontend")
     .WithExternalHttpEndpoints()

@@ -1,0 +1,177 @@
+@page "/products"
+@attribute [StreamRendering(true)]
+@rendermode InteractiveServer
+
+@inject ProductApiClient ProductApi
+
+<PageTitle>Products</PageTitle>
+
+<h1>Products</h1>
+
+<p>Questa pagina dimostra le operazioni CRUD su PostgreSQL tramite l'API service.</p>
+
+<!-- Form per aggiungere un nuovo prodotto -->
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0">Aggiungi nuovo prodotto</h5>
+    </div>
+    <div class="card-body">
+        <EditForm Model="newProduct" OnValidSubmit="AddProduct" FormName="addProduct">
+            <div class="row g-3">
+                <div class="col-md-3">
+                    <label class="form-label">Nome</label>
+                    <InputText @bind-Value="newProduct.Name" class="form-control" placeholder="Nome prodotto" />
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Descrizione</label>
+                    <InputText @bind-Value="newProduct.Description" class="form-control" placeholder="Descrizione (opzionale)" />
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Prezzo</label>
+                    <InputNumber @bind-Value="newProduct.Price" class="form-control" placeholder="0.00" />
+                </div>
+                <div class="col-md-3 d-flex align-items-end">
+                    <button type="submit" class="btn btn-primary" disabled="@isSubmitting">
+                        @if (isSubmitting)
+                        {
+                            <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+                        }
+                        Aggiungi
+                    </button>
+                </div>
+            </div>
+        </EditForm>
+        @if (!string.IsNullOrEmpty(errorMessage))
+        {
+            <div class="alert alert-danger mt-2 mb-0">@errorMessage</div>
+        }
+    </div>
+</div>
+
+<!-- Lista prodotti -->
+@if (products == null)
+{
+    <p><em>Caricamento...</em></p>
+}
+else if (products.Length == 0)
+{
+    <div class="alert alert-info">Nessun prodotto trovato. Aggiungine uno usando il form qui sopra!</div>
+}
+else
+{
+    <table class="table table-striped table-hover">
+        <thead class="table-dark">
+            <tr>
+                <th>ID</th>
+                <th>Nome</th>
+                <th>Descrizione</th>
+                <th>Prezzo</th>
+                <th>Data creazione</th>
+                <th>Azioni</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var product in products)
+            {
+                <tr>
+                    <td>@product.Id</td>
+                    <td><strong>@product.Name</strong></td>
+                    <td>@(product.Description ?? "—")</td>
+                    <td>@product.Price.ToString("C2")</td>
+                    <td>@product.CreatedAt.ToString("g")</td>
+                    <td>
+                        <button class="btn btn-sm btn-outline-danger" @onclick="() => DeleteProduct(product.Id)" disabled="@isDeleting">
+                            Elimina
+                        </button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+    <p class="text-muted">Totale: @products.Length prodotti</p>
+}
+
+@code {
+    private Product[]? products;
+    private ProductFormModel newProduct = new();
+    private bool isSubmitting;
+    private bool isDeleting;
+    private string? errorMessage;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadProducts();
+    }
+
+    private async Task LoadProducts()
+    {
+        try
+        {
+            products = await ProductApi.GetProductsAsync();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Errore nel caricamento prodotti: {ex.Message}";
+        }
+    }
+
+    private async Task AddProduct()
+    {
+        if (string.IsNullOrWhiteSpace(newProduct.Name))
+            return;
+
+        isSubmitting = true;
+        errorMessage = null;
+
+        try
+        {
+            var request = new CreateProductRequest(
+                newProduct.Name,
+                string.IsNullOrWhiteSpace(newProduct.Description) ? null : newProduct.Description,
+                newProduct.Price
+            );
+            await ProductApi.CreateProductAsync(request);
+            newProduct = new();
+            await LoadProducts();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Errore nella creazione: {ex.Message}";
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    private async Task DeleteProduct(int id)
+    {
+        isDeleting = true;
+        errorMessage = null;
+
+        try
+        {
+            var success = await ProductApi.DeleteProductAsync(id);
+            if (!success)
+            {
+                errorMessage = $"Prodotto con ID {id} non trovato.";
+            }
+            await LoadProducts();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Errore nell'eliminazione: {ex.Message}";
+        }
+        finally
+        {
+            isDeleting = false;
+        }
+    }
+
+    private class ProductFormModel
+    {
+        public string Name { get; set; } = string.Empty;
+        public string? Description { get; set; }
+        public decimal Price { get; set; }
+    }
+}

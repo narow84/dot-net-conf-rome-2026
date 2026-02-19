@@ -11,6 +11,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Aspire13BatteriesIncludedDemo.ApiService\Aspire13BatteriesIncludedDemo.ApiService.csproj" />
     <ProjectReference Include="..\Aspire13BatteriesIncludedDemo.Web\Aspire13BatteriesIncludedDemo.Web.csproj" />
+    <ProjectReference Include="..\Aspire13BatteriesIncludedDemo.MigrationService\Aspire13BatteriesIncludedDemo.MigrationService.csproj" />
   </ItemGroup>
 
   <ItemGroup>
