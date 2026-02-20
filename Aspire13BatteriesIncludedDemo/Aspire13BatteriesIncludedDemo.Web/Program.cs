@@ -6,6 +6,14 @@ var builder = WebApplication.CreateBuilder(args);
 // Add service defaults & Aspire client integrations.
 builder.AddServiceDefaults();
 
+// ─────────────────────────────────────────────────────────
+// CONNECTION SHAPING: Redis "cache" → Distributed Cache
+// ─────────────────────────────────────────────────────────
+// Stessa risorsa "cache" dell'AppHost, ma qui Aspire
+// la shapa come IDistributedCache (Redis-backed).
+// Nell'ApiService la stessa risorsa è shapata come Output Cache.
+builder.AddRedisDistributedCache("cache");
+
 // Add services to the container.
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
@@ -25,6 +33,11 @@ builder.Services.AddHttpClient<ProductApiClient>(client =>
     });
 
 builder.Services.AddHttpClient<ChatApiClient>(client =>
+    {
+        client.BaseAddress = new("https+http://apiservice");
+    });
+
+builder.Services.AddHttpClient<ConnectionShapingApiClient>(client =>
     {
         client.BaseAddress = new("https+http://apiservice");
     });

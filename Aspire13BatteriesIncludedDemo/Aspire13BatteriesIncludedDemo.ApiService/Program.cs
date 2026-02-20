@@ -1,15 +1,33 @@
 using Npgsql;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Hosting;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Scalar.AspNetCore;
+using StackExchange.Redis;
+using Aspire13BatteriesIncludedDemo.ApiService.Data;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add service defaults & Aspire client integrations.
 builder.AddServiceDefaults();
 
+// ─────────────────────────────────────────────────────────
+// CONNECTION SHAPING: PostgreSQL "appDb" → due driver diversi
+// ─────────────────────────────────────────────────────────
+// Shape 1: Aspire.Npgsql → registra NpgsqlDataSource (raw ADO.NET)
 builder.AddNpgsqlDataSource("appDb");
+
+// Shape 2: Aspire.Npgsql.EntityFrameworkCore.PostgreSQL → registra CatalogDbContext (EF Core ORM)
+// STESSA connection string "appDb", ma servizio DI diverso!
+builder.AddNpgsqlDbContext<CatalogDbContext>("appDb");
+
+// ─────────────────────────────────────────────────────────
+// CONNECTION SHAPING: Redis "cache" → Output Cache provider
+// ─────────────────────────────────────────────────────────
+// Shape: Aspire.StackExchange.Redis.OutputCaching → configura l'output cache middleware
+// Nel Web frontend, la stessa risorsa "cache" viene consumata come IDistributedCache.
+builder.AddRedisOutputCache("cache");
 
 // Add Azure AI Foundry Chat Completions client + register keyed IChatClient.
 // Connection name "chat" matches the deployment resource name from the AppHost.
@@ -72,13 +90,16 @@ var app = builder.Build();
 // Configure the HTTP request pipeline.
 app.UseExceptionHandler();
 
+// Abilita l'output cache middleware (backed by Redis grazie al connection shaping)
+app.UseOutputCache();
+
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
     app.MapScalarApiReference();
 }
 
-app.MapGet("/", () => "API service is running. Try /products, /weatherforecast, or /chat?message=hello");
+app.MapGet("/", () => "API service is running. Try /products, /products/ef, /diagnostics/connection-shaping, /weatherforecast, or /chat?message=hello");
 
 // --- Chat endpoint (Microsoft Agent Framework demo) ---
 // The MAF agent has built-in OpenTelemetry instrumentation:
@@ -91,7 +112,10 @@ app.MapGet("/chat", async (string message, [Microsoft.Extensions.DependencyInjec
 })
 .WithName("Chat");
 
-// --- Products endpoints (Postgres demo) ---
+// ───────────────────────────────────────────────────────────
+// Products endpoints – SHAPE 1: raw NpgsqlDataSource (ADO.NET)
+// Aspire ha iniettato la connection string e registrato NpgsqlDataSource
+// ───────────────────────────────────────────────────────────
 
 app.MapGet("/products", async (NpgsqlDataSource dataSource) =>
 {
@@ -113,6 +137,7 @@ app.MapGet("/products", async (NpgsqlDataSource dataSource) =>
     }
     return Results.Ok(products);
 })
+.CacheOutput(p => p.Expire(TimeSpan.FromSeconds(30))) // Cached in Redis tramite output cache shaping
 .WithName("GetProducts");
 
 app.MapGet("/products/{id:int}", async (int id, NpgsqlDataSource dataSource) =>
@@ -173,6 +198,212 @@ app.MapDelete("/products/{id:int}", async (int id, NpgsqlDataSource dataSource) 
     return rows > 0 ? Results.NoContent() : Results.NotFound();
 })
 .WithName("DeleteProduct");
+
+// ─────────────────────────────────────────────────────────
+// Products endpoint – SHAPE 2: Entity Framework Core (CatalogDbContext)
+// Stessa risorsa "appDb", ma Aspire l'ha shapata come DbContext EF Core.
+// ─────────────────────────────────────────────────────────
+
+app.MapGet("/products/ef", async (CatalogDbContext db) =>
+{
+    var products = await db.Products
+        .OrderBy(p => p.Id)
+        .Select(p => new Product(p.Id, p.Name, p.Description, p.Price, p.CreatedAt))
+        .ToListAsync();
+    return Results.Ok(products);
+})
+.CacheOutput(p => p.Expire(TimeSpan.FromSeconds(30)))
+.WithName("GetProductsEfCore");
+
+app.MapGet("/products/ef/{id:int}", async (int id, CatalogDbContext db) =>
+{
+    var p = await db.Products.FindAsync(id);
+    return p is null
+        ? Results.NotFound()
+        : Results.Ok(new Product(p.Id, p.Name, p.Description, p.Price, p.CreatedAt));
+})
+.WithName("GetProductByIdEfCore");
+
+// ─────────────────────────────────────────────────────────
+// DIAGNOSTICS – mostra come Aspire ha shapato le connessioni
+// ─────────────────────────────────────────────────────────
+
+app.MapGet("/diagnostics/connection-shaping", (
+    NpgsqlDataSource npgsqlDs,
+    CatalogDbContext dbContext,
+    IConnectionMultiplexer redis,
+    IConfiguration config) =>
+{
+    static string Sanitize(string? cs)
+    {
+        if (string.IsNullOrEmpty(cs)) return "(not available)";
+        return System.Text.RegularExpressions.Regex.Replace(
+            cs, @"(?i)(password|pwd)=[^;]+", "$1=***");
+    }
+
+    // ── La pipeline in 3 step per ogni "shape" ──
+    // Step 1 (AppHost)   → definisci la risorsa: AddPostgres/AddRedis
+    // Step 2 (AppHost)   → collega ai progetti:  WithReference(resource)
+    //                       Aspire genera ConnectionStrings__<name> come ENV VAR nel processo
+    // Step 3 (Progetto)  → scegli il driver:     AddNpgsqlDataSource / AddNpgsqlDbContext / AddRedisOutputCache
+    //                       Il client integration legge ConnectionStrings:<name> dall'IConfiguration
+    //                       IConfiguration capisce che ConnectionStrings__appDb (env var) = ConnectionStrings:appDb (config key)
+    //                       ZERO modifiche a codice o appsettings.json — è tutto env var!
+
+    var appDbRaw = Sanitize(config.GetConnectionString("appDb"));
+    var cacheRaw = Sanitize(config.GetConnectionString("cache"));
+
+    // Leggi le env var reali dal processo — queste SONO la magia
+    // Aspire usa __ come separatore (convenzione .NET per env var gerarchiche)
+    var envVars = new Dictionary<string, string>();
+    foreach (var entry in Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>())
+    {
+        var k = entry.Key?.ToString() ?? "";
+        if (k.StartsWith("ConnectionStrings__", StringComparison.OrdinalIgnoreCase))
+        {
+            envVars[k] = Sanitize(entry.Value?.ToString());
+        }
+    }
+
+    // Raccogli anche le env var di service discovery (per mostrare il meccanismo completo)
+    foreach (var entry in Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>())
+    {
+        var k = entry.Key?.ToString() ?? "";
+        if (k.StartsWith("services__", StringComparison.OrdinalIgnoreCase))
+        {
+            envVars[k] = entry.Value?.ToString() ?? "";
+        }
+    }
+
+    return Results.Ok(new
+    {
+        Title = "🔌 Aspire Connection Shaping — Dove avviene la magia",
+
+        // ── IL PUNTO FONDAMENTALE: env var = zero codice, zero appsettings.json ──
+        EnvVar_Mechanism = new
+        {
+            Title = "🎯 Perché env var? Zero sforzo, zero modifiche di codice",
+            How = new[]
+            {
+                "1. L'AppHost chiama .WithReference(appDb) — questo NON modifica codice del progetto consumer",
+                "2. Aspire genera una ENV VAR nel processo del progetto: ConnectionStrings__appDb=Host=...;Database=catalog-db;...",
+                "3. Il .NET Configuration system mappa automaticamente ConnectionStrings__appDb → ConnectionStrings:appDb",
+                "4. builder.AddNpgsqlDataSource(\"appDb\") chiama config.GetConnectionString(\"appDb\") — e trova il valore!",
+                "5. → NESSUN appsettings.json da mantenere, NESSUN User Secret, NESSUN file di configurazione"
+            },
+            Why_This_Is_Brilliant = new[]
+            {
+                "✅ Cambi infrastruttura (password, host, porta)? → Solo l'AppHost cambia, i progetti NON vengono toccati",
+                "✅ Aggiungi un nuovo servizio consumer? → Basta .WithReference() nell'AppHost, il progetto sceglie il suo driver",
+                "✅ Dev locale vs Produzione? → Aspire genera env var diverse (container locale vs Azure Managed Identity), il codice è IDENTICO",
+                "✅ Nessun rischio di secret committed nel repo — le env var sono effimere, vivono solo nel processo"
+            },
+            DotNet_Convention = "ENV VAR con __ (doppio underscore) → IConfiguration key con : (due punti). Es: ConnectionStrings__appDb → ConnectionStrings:appDb"
+        },
+
+        // ── Le ENV VAR reali iniettate nel processo di questo ApiService ──
+        Injected_EnvVars = envVars.OrderBy(kv => kv.Key).Select(kv => new
+        {
+            EnvVarName = kv.Key,
+            Value = kv.Value,
+            MapsTo_IConfiguration = kv.Key.Replace("__", ":")
+        }),
+
+        Pipeline = new[]
+        {
+            // ───────────── PostgreSQL: Shape 1 (Npgsql raw) ─────────────
+            new
+            {
+                Resource = "PostgreSQL → appDb",
+                Step1_AppHost_Resource = "builder.AddPostgres(\"postgres\").AddDatabase(\"appDb\", \"catalog-db\")",
+                Step1_File = "AppHost.cs",
+                Step2_AppHost_Reference = ".WithReference(appDb)  // su apiservice E migrations",
+                Step2_WhatHappens = "Aspire inietta ENV VAR → ConnectionStrings__appDb=Host=...;Database=catalog-db;... — NESSUNA modifica a codice o config",
+                Step2_EnvVarName = "ConnectionStrings__appDb",
+                Step2_InjectedValue = appDbRaw,
+                Step3_ClientIntegration = "builder.AddNpgsqlDataSource(\"appDb\")",
+                Step3_NuGetPackage = "Aspire.Npgsql",
+                Step3_File = "ApiService/Program.cs (riga 20)",
+                Step3_WhatHappens = "Chiama config.GetConnectionString(\"appDb\") → .NET traduce in env var ConnectionStrings__appDb → crea NpgsqlDataSource → Singleton nel DI",
+                Step3_RegisteredType = "NpgsqlDataSource",
+                Step3_UsedVia = "NpgsqlDataSource dataSource  (parameter injection negli endpoint)",
+                ProofConnectionString = Sanitize(npgsqlDs.ConnectionString),
+                Endpoint = "/products"
+            },
+            // ───────────── PostgreSQL: Shape 2 (EF Core) ─────────────
+            new
+            {
+                Resource = "PostgreSQL → appDb",
+                Step1_AppHost_Resource = "builder.AddPostgres(\"postgres\").AddDatabase(\"appDb\", \"catalog-db\")",
+                Step1_File = "AppHost.cs",
+                Step2_AppHost_Reference = ".WithReference(appDb)  // stesso .WithReference di prima!",
+                Step2_WhatHappens = "STESSA env var ConnectionStrings__appDb — zero configurazione aggiuntiva, zero file modificati",
+                Step2_EnvVarName = "ConnectionStrings__appDb",
+                Step2_InjectedValue = appDbRaw,
+                Step3_ClientIntegration = "builder.AddNpgsqlDbContext<CatalogDbContext>(\"appDb\")",
+                Step3_NuGetPackage = "Aspire.Npgsql.EntityFrameworkCore.PostgreSQL",
+                Step3_File = "ApiService/Program.cs (riga 24)",
+                Step3_WhatHappens = "Chiama config.GetConnectionString(\"appDb\") → stessa env var! → ma registra DbContext<CatalogDbContext> invece di NpgsqlDataSource",
+                Step3_RegisteredType = "CatalogDbContext (DbContext<CatalogDbContext>)",
+                Step3_UsedVia = "CatalogDbContext db  (parameter injection negli endpoint)",
+                ProofConnectionString = Sanitize(dbContext.Database.GetConnectionString()),
+                Endpoint = "/products/ef"
+            },
+            // ───────────── Redis: Shape OutputCache (ApiService) ─────────────
+            new
+            {
+                Resource = "Redis → cache",
+                Step1_AppHost_Resource = "builder.AddRedis(\"cache\")",
+                Step1_File = "AppHost.cs",
+                Step2_AppHost_Reference = ".WithReference(redis)  // su apiservice",
+                Step2_WhatHappens = "Aspire inietta ENV VAR → ConnectionStrings__cache=localhost:port — zero modifica a codice o config",
+                Step2_EnvVarName = "ConnectionStrings__cache",
+                Step2_InjectedValue = cacheRaw,
+                Step3_ClientIntegration = "builder.AddRedisOutputCache(\"cache\")",
+                Step3_NuGetPackage = "Aspire.StackExchange.Redis.OutputCaching",
+                Step3_File = "ApiService/Program.cs (riga 31)",
+                Step3_WhatHappens = "Chiama config.GetConnectionString(\"cache\") → env var ConnectionStrings__cache → IConnectionMultiplexer + OutputCache middleware",
+                Step3_RegisteredType = "IOutputCacheStore (+ IConnectionMultiplexer)",
+                Step3_UsedVia = "app.UseOutputCache() + .CacheOutput() sui singoli endpoint",
+                ProofConnectionString = redis.Configuration ?? "(multiplexer connected)",
+                Endpoint = "/products (con header Cache-Control)"
+            },
+            // ───────────── Redis: Shape DistributedCache (Web) ─────────────
+            new
+            {
+                Resource = "Redis → cache",
+                Step1_AppHost_Resource = "builder.AddRedis(\"cache\")",
+                Step1_File = "AppHost.cs",
+                Step2_AppHost_Reference = ".WithReference(redis)  // su webfrontend",
+                Step2_WhatHappens = "STESSA env var ConnectionStrings__cache — ma iniettata nel processo del Web frontend",
+                Step2_EnvVarName = "ConnectionStrings__cache",
+                Step2_InjectedValue = cacheRaw,
+                Step3_ClientIntegration = "builder.AddRedisDistributedCache(\"cache\")",
+                Step3_NuGetPackage = "Aspire.StackExchange.Redis.DistributedCaching",
+                Step3_File = "Web/Program.cs (riga 15)",
+                Step3_WhatHappens = "Chiama config.GetConnectionString(\"cache\") → stessa env var! → ma registra IDistributedCache (RedisCache) nel DI",
+                Step3_RegisteredType = "IDistributedCache",
+                Step3_UsedVia = "@inject IDistributedCache DistributedCache  (nei componenti Razor)",
+                ProofConnectionString = cacheRaw,
+                Endpoint = "/connection-shaping (pagina Web)"
+            }
+        },
+        Key_Insight = new
+        {
+            Punto1 = "Le connection string sono ENV VAR (ConnectionStrings__<name>) — il codice del progetto NON cambia MAI.",
+            Punto2 = ".NET Configuration mappa __ → : automaticamente. config.GetConnectionString(\"appDb\") legge ConnectionStrings__appDb dall'ambiente.",
+            Punto3 = "WithReference() nell'AppHost è l'UNICA cosa che serve — genera l'env var e la inietta nel processo. Zero appsettings.json, zero User Secrets.",
+            Punto4 = "La 'magia' è nel builder.Add*() della client integration: legge l'env var via IConfiguration, crea il tipo .NET giusto, lo registra nel DI. Il dev NON tocca nulla.",
+            Punto5 = "Dev locale ↔ Produzione: Aspire genera env var diverse (localhost:random_port vs Azure connection string con Managed Identity). Il codice è IDENTICO."
+        },
+        RawConnectionStrings = new
+        {
+            appDb = appDbRaw,
+            cache = cacheRaw
+        }
+    });
+})
+.WithName("GetConnectionShaping");
 
 // --- Weather forecast endpoint ---
 
