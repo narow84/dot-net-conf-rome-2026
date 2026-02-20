@@ -3,6 +3,10 @@ using Aspire13BatteriesIncludedDemo.AppHost;
 
 var builder = DistributedApplication.CreateBuilder(args);
 
+// Definisce l'ambiente di compute per il deploy:
+// Azure Container Apps + Azure Container Registry
+builder.AddAzureContainerAppEnvironment("stage");
+
 var pgPassword = builder.AddParameter("pg-password", secret: true)
     .WithDescription("The password for the Postgres database");
 
