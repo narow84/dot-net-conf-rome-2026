@@ -10,4 +10,8 @@
     <ProjectReference Include="..\Aspire13BatteriesIncludedDemo.ServiceDefaults\Aspire13BatteriesIncludedDemo.ServiceDefaults.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Aspire.StackExchange.Redis.DistributedCaching" Version="13.1.1" />
+  </ItemGroup>
+
 </Project>

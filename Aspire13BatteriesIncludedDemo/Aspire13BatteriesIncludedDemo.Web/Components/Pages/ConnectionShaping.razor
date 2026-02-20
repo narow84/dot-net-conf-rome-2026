@@ -1,0 +1,305 @@
+@page "/connection-shaping"
+@attribute [StreamRendering]
+@inject ConnectionShapingApiClient Client
+@inject IDistributedCache DistributedCache
+
+@using Microsoft.Extensions.Caching.Distributed
+@using Aspire13BatteriesIncludedDemo.Web
+
+<PageTitle>🔌 Connection Shaping</PageTitle>
+
+<h1>🔌 Aspire Connection Shaping</h1>
+<p class="lead">
+    Come fa Aspire a passare le connection string ai progetti consumer?
+    <strong>Environment Variables</strong> — nessuna modifica al codice, nessun <code>appsettings.json</code>,
+    nessun User Secret. L'AppHost genera <code>ConnectionStrings__&lt;name&gt;</code> come env var,
+    .NET Configuration la mappa automaticamente, e il client integration la legge e crea il tipo .NET giusto.
+</p>
+
+@if (shapingInfo is null)
+{
+    <p><em>Caricamento pipeline di connection shaping...</em></p>
+}
+else
+{
+    @* ──── ENV VAR MECHANISM — La sezione più importante ──── *@
+    <div class="card mb-4 border-danger shadow">
+        <div class="card-header bg-danger text-white">
+            <h5 class="mb-0">🎯 @shapingInfo.EnvVarMechanism.Title</h5>
+        </div>
+        <div class="card-body">
+            <h6 class="text-danger fw-bold mb-3">Come funziona — step by step:</h6>
+            <div class="list-group mb-3">
+                @foreach (var step in shapingInfo.EnvVarMechanism.How)
+                {
+                    <div class="list-group-item list-group-item-action">
+                        <code style="font-size:.95em;">@step</code>
+                    </div>
+                }
+            </div>
+
+            <h6 class="text-success fw-bold mb-2">Perché è geniale:</h6>
+            <ul class="mb-3">
+                @foreach (var reason in shapingInfo.EnvVarMechanism.WhyThisIsBrilliant)
+                {
+                    <li>@reason</li>
+                }
+            </ul>
+
+            <div class="alert alert-warning mb-0">
+                <strong>📘 Convenzione .NET:</strong> @shapingInfo.EnvVarMechanism.DotNetConvention
+            </div>
+        </div>
+    </div>
+
+    @* ──── ENV VAR REALI iniettate in questo processo ──── *@
+    @if (shapingInfo.InjectedEnvVars?.Length > 0)
+    {
+        <div class="card mb-4 border-warning shadow">
+            <div class="card-header bg-warning text-dark">
+                <h5 class="mb-0">🔍 Environment Variables REALI iniettate in questo processo (ApiService)</h5>
+            </div>
+            <div class="card-body p-0">
+                <table class="table table-sm table-striped mb-0">
+                    <thead class="table-dark">
+                        <tr>
+                            <th>ENV VAR (nel processo)</th>
+                            <th>→</th>
+                            <th>IConfiguration Key</th>
+                            <th>Valore</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var ev in shapingInfo.InjectedEnvVars)
+                        {
+                            <tr>
+                                <td><code class="text-danger fw-bold">@ev.EnvVarName</code></td>
+                                <td class="text-center">→</td>
+                                <td><code class="text-primary">@ev.MapsToIConfiguration</code></td>
+                                <td><code class="text-break" style="font-size:.8em;">@ev.Value</code></td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <div class="card-footer bg-light">
+                <small class="text-muted">
+                    ⚠️ Queste env var sono generate automaticamente da Aspire quando fai <code>.WithReference()</code>.
+                    Non devi scrivere nulla in <code>appsettings.json</code> — sono effimere, vivono solo nel processo.
+                </small>
+            </div>
+        </div>
+    }
+
+    @* ──── Pipeline cards ──── *@
+    <h3 class="mt-4 mb-3">📊 Pipeline di Connection Shaping — 4 Shape dalla stessa infrastruttura</h3>
+
+    var colorMap = new Dictionary<string, (string border, string bg, string icon)>
+    {
+        ["PostgreSQL"] = ("primary", "primary", "🐘"),
+        ["Redis"]      = ("danger",  "danger",  "🔴")
+    };
+
+    @foreach (var shape in shapingInfo.Pipeline)
+    {
+        var key = shape.Resource.Contains("PostgreSQL") ? "PostgreSQL" : "Redis";
+        var (border, bg, icon) = colorMap[key];
+
+        <div class="card mb-4 border-@border">
+            <div class="card-header bg-@bg text-white d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">@icon @shape.Resource</h5>
+                <span class="badge bg-light text-dark">@shape.Endpoint</span>
+            </div>
+            <div class="card-body p-0">
+
+                @* ── Step 1: AppHost definisce la risorsa ── *@
+                <div class="p-3 border-bottom" style="background:#f0f4ff;">
+                    <div class="d-flex align-items-start">
+                        <span class="badge bg-secondary me-2 mt-1" style="min-width:90px;">Step 1</span>
+                        <div>
+                            <strong>AppHost definisce la risorsa</strong>
+                            <span class="text-muted ms-2">📄 @shape.Step1File</span>
+                            <pre class="mt-1 mb-0 p-2 bg-dark text-light rounded" style="font-size:.85em;">@shape.Step1AppHostResource</pre>
+                        </div>
+                    </div>
+                </div>
+
+                @* ── Freccia con env var ── *@
+                <div class="text-center py-1" style="font-size:1.4em; color:#6c757d;">
+                    ⬇️ <small class="text-danger fw-bold" style="font-size:.65em;">genera ENV VAR: <code>@shape.Step2EnvVarName</code></small>
+                </div>
+
+                @* ── Step 2: WithReference() inietta la env var ── *@
+                <div class="p-3 border-bottom" style="background:#fff3cd;">
+                    <div class="d-flex align-items-start">
+                        <span class="badge bg-warning text-dark me-2 mt-1" style="min-width:90px;">Step 2</span>
+                        <div>
+                            <strong>WithReference() — genera ENV VAR, zero codice!</strong>
+                            <span class="text-muted ms-2">📄 AppHost.cs</span>
+                            <pre class="mt-1 mb-1 p-2 bg-dark text-light rounded" style="font-size:.85em;">@shape.Step2AppHostReference</pre>
+                            <div class="alert alert-danger py-1 px-2 mb-1 small">
+                                <strong>🔑 ENV VAR generata:</strong> <code class="text-break fw-bold">@shape.Step2EnvVarName = @shape.Step2InjectedValue</code>
+                            </div>
+                            <p class="mb-0 small">📌 @shape.Step2WhatHappens</p>
+                        </div>
+                    </div>
+                </div>
+
+                @* ── Freccia con IConfiguration ── *@
+                <div class="text-center py-1" style="font-size:1.4em; color:#6c757d;">
+                    ⬇️ <small class="text-success fw-bold" style="font-size:.65em;">IConfiguration legge automaticamente l'env var</small>
+                </div>
+
+                @* ── Step 3: Il progetto sceglie il driver ── *@
+                <div class="p-3" style="background:#e8f5e9;">
+                    <div class="d-flex align-items-start">
+                        <span class="badge bg-success me-2 mt-1" style="min-width:90px;">Step 3 ✨</span>
+                        <div>
+                            <strong>Client Integration — crea il tipo .NET, il dev non fa nulla!</strong>
+                            <span class="text-muted ms-2">📄 @shape.Step3File</span>
+                            <pre class="mt-1 mb-1 p-2 bg-dark text-warning rounded" style="font-size:.85em;">@shape.Step3ClientIntegration</pre>
+                            <p class="mb-1 small">📦 <strong>NuGet:</strong> <code>@shape.Step3NuGetPackage</code></p>
+                            <p class="mb-1 small">⚙️ <strong>Cosa fa internamente:</strong> @shape.Step3WhatHappens</p>
+                            <p class="mb-1 small">🏷️ <strong>Tipo nel DI:</strong> <code>@shape.Step3RegisteredType</code></p>
+                            <p class="mb-0 small">💉 <strong>Usato come:</strong> <code>@shape.Step3UsedVia</code></p>
+                        </div>
+                    </div>
+                </div>
+
+                @* ── Proof ── *@
+                <div class="p-2 border-top bg-light">
+                    <small>🔍 <strong>Proof — connection string letta dal driver:</strong> <code class="text-break">@shape.ProofConnectionString</code></small>
+                </div>
+
+            </div>
+        </div>
+    }
+
+    @* ──── Test live distributed cache ──── *@
+    <div class="card mb-4 border-success">
+        <div class="card-header bg-success text-white">
+            <h5 class="mb-0">🧪 Test Live — IDistributedCache (Redis) nel Web Frontend</h5>
+        </div>
+        <div class="card-body">
+            <p>
+                Questa pagina è nel <strong>Web frontend</strong>, che consuma la stessa risorsa Redis
+                &ldquo;cache&rdquo; ma come <code>IDistributedCache</code>
+                (tramite <code>builder.AddRedisDistributedCache("cache")</code>).
+            </p>
+            <p>
+                <strong>Valore letto dalla cache:</strong>
+                <code>@(cacheTestValue ?? "(vuoto — primo caricamento, ricarica la pagina!)")</code>
+            </p>
+            <p class="text-muted small mb-0">
+                Anche qui: la connection string arriva come <code>ConnectionStrings__cache</code> env var.
+                Nessun <code>appsettings.json</code>, nessun codice di configurazione.
+            </p>
+        </div>
+    </div>
+
+    @* ──── I 5 punti chiave ──── *@
+    <div class="alert alert-info">
+        <h5>💡 I 5 punti chiave — tutto ruota intorno alle ENV VAR</h5>
+        <ol class="mb-0">
+            <li class="fw-bold text-danger">@shapingInfo.KeyInsight.Punto1</li>
+            <li class="fw-bold text-danger">@shapingInfo.KeyInsight.Punto2</li>
+            <li>@shapingInfo.KeyInsight.Punto3</li>
+            <li class="text-primary fw-bold">@shapingInfo.KeyInsight.Punto4</li>
+            <li>@shapingInfo.KeyInsight.Punto5</li>
+        </ol>
+    </div>
+
+    @* ──── Riepilogo visivo ──── *@
+    <div class="card mb-4 border-dark">
+        <div class="card-header bg-dark text-white">
+            <h5 class="mb-0">📐 Riepilogo: ENV VAR come ponte universale</h5>
+        </div>
+        <div class="card-body">
+            <pre class="mb-0" style="font-size:.9em; line-height:1.6;">
+┌─────────────────────────────────────────────────────────────────────────┐
+│  <strong>AppHost.cs</strong>  (definisce le risorse infrastrutturali)                    │
+│                                                                         │
+│  AddPostgres("postgres").AddDatabase("appDb")    AddRedis("cache")     │
+│       │                                              │                  │
+│       ▼                                              ▼                  │
+│  .WithReference(appDb)                       .WithReference(redis)     │
+│       │                                              │                  │
+│  genera ENV VAR:                              genera ENV VAR:           │
+│  <strong class="text-danger">ConnectionStrings__appDb</strong>=Host=...          <strong class="text-danger">ConnectionStrings__cache</strong>=...  │
+│                                                                         │
+│  📌 __ (doppio underscore) = separatore .NET per env var gerarchiche    │
+│  📌 .NET Configuration mappa __ → : automaticamente                     │
+│  📌 ZERO appsettings.json • ZERO User Secrets • ZERO codice di config  │
+└───────┬──────────────────────────────────────────────┬──────────────────┘
+        │                                              │
+        ▼                                              ▼
+┌──── ApiService/Program.cs ───┐   ┌──── Web/Program.cs ──────────────┐
+│                               │   │                                   │
+│  AddNpgsqlDataSource("appDb") │   │  AddRedisDistributedCache("cache")│
+│  ↓ legge env var via          │   │  ↓ legge env var via              │
+│    IConfiguration             │   │    IConfiguration                 │
+│  → NpgsqlDataSource           │   │  → IDistributedCache              │
+│                               │   │                                   │
+│  AddNpgsqlDbContext("appDb")  │   │  Il codice NON cambia mai!        │
+│  ↓ stessa env var!            │   └───────────────────────────────────┘
+│  → CatalogDbContext           │
+│                               │
+│  AddRedisOutputCache("cache") │
+│  ↓ env var cache              │
+│  → IOutputCacheStore          │
+└───────────────────────────────┘
+
+ENV VAR + IConfiguration + Client Integration = 🪄 ZERO configurazione manuale
+</pre>
+        </div>
+    </div>
+
+    @* ──── Raw connection strings ──── *@
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="mb-0">📋 Connection Strings — lette da IConfiguration (che legge le ENV VAR)</h5>
+        </div>
+        <div class="card-body">
+            <dl class="mb-0">
+                <dt><code>ConnectionStrings__appDb</code> → <code>ConnectionStrings:appDb</code></dt>
+                <dd><code class="text-break">@shapingInfo.RawConnectionStrings.AppDb</code></dd>
+                <dt><code>ConnectionStrings__cache</code> → <code>ConnectionStrings:cache</code></dt>
+                <dd><code class="text-break">@shapingInfo.RawConnectionStrings.Cache</code></dd>
+            </dl>
+        </div>
+    </div>
+}
+
+@code {
+    private ConnectionShapingInfo? shapingInfo;
+    private string? cacheTestValue;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Read existing cache value (if any)
+        var existing = await DistributedCache.GetStringAsync("connection-shaping-test");
+        cacheTestValue = existing;
+
+        // Write current timestamp to the distributed cache
+        await DistributedCache.SetStringAsync(
+            "connection-shaping-test",
+            $"Scritto alle {DateTime.Now:HH:mm:ss} dal Web frontend",
+            new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5) });
+
+        // Fetch connection shaping info from the API
+        try
+        {
+            shapingInfo = await Client.GetConnectionShapingAsync();
+        }
+        catch (Exception ex)
+        {
+            shapingInfo = new ConnectionShapingInfo(
+                "Errore",
+                new EnvVarMechanism("Errore", [], [], ""),
+                [],
+                [],
+                new KeyInsight(ex.Message, "", "", "", ""),
+                new RawConnectionStrings("N/A", "N/A"));
+        }
+    }
+}

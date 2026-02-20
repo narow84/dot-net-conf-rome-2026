@@ -7,13 +7,32 @@ var builder = DistributedApplication.CreateBuilder(args);
 // Azure Container Apps + Azure Container Registry
 builder.AddAzureContainerAppEnvironment("stage");
 
+// ─────────────────────────────────────────────────────────
+// REDIS – stessa risorsa, consumata con "shape" diversi:
+//   • ApiService  → Aspire.StackExchange.Redis.OutputCaching  (IOutputCacheStore)
+//   • WebFrontend → Aspire.StackExchange.Redis.DistributedCaching (IDistributedCache)
+// Aspire inietta la stessa connection string, ma ogni client integration
+// registra il servizio .NET corretto per il driver scelto.
+// ─────────────────────────────────────────────────────────
+var redis = builder.AddRedis("cache")
+    .WithDataVolume()
+    .WithLifetime(ContainerLifetime.Persistent);
+redis.WithRedisInsight(ri => ri.WithParentRelationship(redis));
+
+// ─────────────────────────────────────────────────────────
+// POSTGRES – stessa risorsa, consumata con "shape" diversi:
+//   • ApiService       → Aspire.Npgsql                            (NpgsqlDataSource)
+//   • ApiService       → Aspire.Npgsql.EntityFrameworkCore        (CatalogDbContext)
+//   • MigrationService → Aspire.Npgsql                            (NpgsqlDataSource)
+// Stesso ConnectionStrings:appDb → driver diversi, tipi DI diversi.
+// ─────────────────────────────────────────────────────────
 var pgPassword = builder.AddParameter("pg-password", secret: true)
     .WithDescription("The password for the Postgres database");
 
 var postgres = builder.AddPostgres("postgres", password: pgPassword);
 postgres.WithDataVolume(isReadOnly: false)
                     .WithPgAdmin(pg => pg.WithHostPort(5051)
-                                         //.WithUrlForEndpoint("http", url => url.DisplayText = "🗄️ pgAdmin")
+                                         .WithUrlForEndpoint("http", url => url.DisplayText = "🗄️ pgAdmin")
                                          .WithParentRelationship(postgres))
                     .WithLifetime(ContainerLifetime.Persistent)
                     .WithInitFiles("./postgres-init")
@@ -49,14 +68,16 @@ var chatDeployment = aiFoundry.AddDeployment("chat", AIFoundryModel.OpenAI.Gpt4o
 var apiService = builder.AddProject<Projects.Aspire13BatteriesIncludedDemo_ApiService>("apiservice")
     .WithDevLocalhost("apiservice")
     .WithHttpHealthCheck("/health")
-    .WithReference(appDb)
+    .WithReference(appDb)          // → NpgsqlDataSource + CatalogDbContext (due shape, stessa connessione)
     .WaitFor(appDb)
     .WaitForCompletion(migrations)
     .WithReference(chatDeployment)
     .WaitFor(chatDeployment)
-    //.WithUrlForEndpoint("https", ep => new() { Url = "/scalar", DisplayText = "🐝 Scalar" })
-    //.WithUrlForEndpoint("http", url => url.DisplayLocation= UrlDisplayLocation.DetailsOnly )
-    //.WithUrlForEndpoint("https", url => url.DisplayLocation= UrlDisplayLocation.DetailsOnly )
+    .WithReference(redis)           // → Redis Output Cache
+    .WaitFor(redis)
+    .WithUrlForEndpoint("https", ep => new() { Url = "/scalar", DisplayText = "🐝 Scalar" })
+    .WithUrlForEndpoint("http", url => url.DisplayLocation= UrlDisplayLocation.DetailsOnly )
+    .WithUrlForEndpoint("https", url => url.DisplayLocation= UrlDisplayLocation.DetailsOnly )
     ;
 
 builder.AddProject<Projects.Aspire13BatteriesIncludedDemo_Web>("webfrontend")
@@ -65,8 +86,10 @@ builder.AddProject<Projects.Aspire13BatteriesIncludedDemo_Web>("webfrontend")
     .WithHttpHealthCheck("/health")
     .WithReference(apiService)
     .WaitFor(apiService)
-    //.WithUrlForEndpoint("http", url => url.DisplayLocation= UrlDisplayLocation.DetailsOnly )
-    //.WithUrlForEndpoint("https", url => url.DisplayText = "🌐 WebApp" )
+    .WithReference(redis)           // → Redis Distributed Cache
+    .WaitFor(redis)
+    .WithUrlForEndpoint("http", url => url.DisplayLocation= UrlDisplayLocation.DetailsOnly )
+    .WithUrlForEndpoint("https", url => url.DisplayText = "🌐 WebApp" )
     ;
 
 builder.Build().Run();
