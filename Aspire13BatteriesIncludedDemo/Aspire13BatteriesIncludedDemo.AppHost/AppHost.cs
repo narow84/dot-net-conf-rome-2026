@@ -32,7 +32,7 @@ var pgPassword = builder.AddParameter("pg-password", secret: true)
 var postgres = builder.AddPostgres("postgres", password: pgPassword);
 postgres.WithDataVolume(isReadOnly: false)
                     .WithPgAdmin(pg => pg.WithHostPort(5051)
-                                         //.WithUrlForEndpoint("http", url => url.DisplayText = "🗄️ pgAdmin")
+                                         .WithUrlForEndpoint("http", url => url.DisplayText = "🗄️ pgAdmin")
                                          .WithParentRelationship(postgres))
                     .WithLifetime(ContainerLifetime.Persistent)
                     .WithInitFiles("./postgres-init")
@@ -75,9 +75,9 @@ var apiService = builder.AddProject<Projects.Aspire13BatteriesIncludedDemo_ApiSe
     .WaitFor(chatDeployment)
     .WithReference(redis)           // → Redis Output Cache
     .WaitFor(redis)
-    //.WithUrlForEndpoint("https", ep => new() { Url = "/scalar", DisplayText = "🐝 Scalar" })
-    //.WithUrlForEndpoint("http", url => url.DisplayLocation= UrlDisplayLocation.DetailsOnly )
-    //.WithUrlForEndpoint("https", url => url.DisplayLocation= UrlDisplayLocation.DetailsOnly )
+    .WithUrlForEndpoint("https", ep => new() { Url = "/scalar", DisplayText = "🐝 Scalar" })
+    .WithUrlForEndpoint("http", url => url.DisplayLocation= UrlDisplayLocation.DetailsOnly )
+    .WithUrlForEndpoint("https", url => url.DisplayLocation= UrlDisplayLocation.DetailsOnly )
     ;
 
 builder.AddProject<Projects.Aspire13BatteriesIncludedDemo_Web>("webfrontend")
@@ -88,8 +88,8 @@ builder.AddProject<Projects.Aspire13BatteriesIncludedDemo_Web>("webfrontend")
     .WaitFor(apiService)
     .WithReference(redis)           // → Redis Distributed Cache
     .WaitFor(redis)
-    //.WithUrlForEndpoint("http", url => url.DisplayLocation= UrlDisplayLocation.DetailsOnly )
-    //.WithUrlForEndpoint("https", url => url.DisplayText = "🌐 WebApp" )
+    .WithUrlForEndpoint("http", url => url.DisplayLocation= UrlDisplayLocation.DetailsOnly )
+    .WithUrlForEndpoint("https", url => url.DisplayText = "🌐 WebApp" )
     ;
 
 builder.Build().Run();
